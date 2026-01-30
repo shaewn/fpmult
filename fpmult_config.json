@@ -1,0 +1,14 @@
+{
+    "test_rounding": false,
+    "rounding_modes_to_test": {
+      "RTE": false,
+      "RTZ": false,
+      "RD": false,
+      "RU": false
+    },
+    "test_zero_input": false,
+    "test_inf_input": false,
+    "test_nan_input": false,
+    "test_subnormal_input": false,
+    "test_parameterize": false
+}
