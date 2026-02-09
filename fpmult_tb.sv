@@ -36,6 +36,9 @@ module fpmult_tb #(parameter int P = 8, parameter int Q = 8) ();
     reg [53:0] line;  // Every test vectors is exactly this long
     integer fd;  // file descriptor
     integer code, num_tests, num_wrong, num_displayed;
+    integer counter;
+
+    localparam DESIRED = 2;
 
     logic [15:0] test_x, test_y, test_p;
     logic [3:0] oor;
@@ -69,6 +72,12 @@ module fpmult_tb #(parameter int P = 8, parameter int Q = 8) ();
         )) begin : test_loop
             // Get next line
             $fscanf(fd, "%x\n", line);
+
+            counter += 1;
+            if (counter != DESIRED) continue;
+
+            $display("Desired line is %x\n", line);
+
             round_mode = line[53:52];
             test_x = line[51:36];
             test_y = line[35:20];
@@ -95,6 +104,7 @@ module fpmult_tb #(parameter int P = 8, parameter int Q = 8) ();
             while (!valid_out) begin
                 @(posedge clk_in);  // wait for FPM to have a valid output
             end
+
             // By here, FPM has finished. In current design, FPM should just
             // holds value until a new start signal is received.
             num_tests++;
@@ -119,6 +129,7 @@ module fpmult_tb #(parameter int P = 8, parameter int Q = 8) ();
                         - (2 ** (Q - 1) - 1),);
                     num_displayed++;
                 end
+
                 num_wrong++;
             end
         end : test_loop

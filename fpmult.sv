@@ -24,6 +24,7 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
                         counter <= 'b0;
                         vector[2 * P - 1:P] <= 'b0;
                         vector[P-1:0] <= a;
+                        $display("a is %x, b is %x\n", a, b);
                         done <= 1'b0;
                     end
                 end
@@ -38,6 +39,7 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
                     logic [COUNTER_BITS-1:0] new_counter;
                     logic [2 * P - 1:0] new_vector;
 
+                    // $display("vector is %x\n", vector);
                     multiplied = b & {P{vector[0]}};
                     product = vector[2 * P - 1:P];
                     sum = multiplied + product;
@@ -95,9 +97,9 @@ endmodule: normalizer
 // significant [2*]
 // flags: {guard, round, sticky}
 module compute_flags #(parameter int P) (input logic [2 * P - 1:0] vector, output logic [2:0] flags);
-    assign flags[0] = vector[P-1];
+    assign flags[2] = vector[P-1];
     assign flags[1] = vector[P-2];
-    assign flags[2] = |vector[P-3:0];
+    assign flags[0] = |vector[P-3:0];
 endmodule: compute_flags
 
 // guard - 
@@ -212,12 +214,10 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
 );
 
     typedef enum logic [2:0] { 
-        IDLE,  
         LOAD,
         EXECUTE,
         NORMALIZE,
         ROUND,
-        RENORMALIZE,
         DONE
     } State;
 
@@ -243,44 +243,44 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
 
     umul #(.P(P)) dummy(clk_in, ~rst_in_N, {1'b1, input_x[P-2:0]}, {1'b1, input_y[P-2:0]}, start_multiplier, multiplier_done, significand_product_raw);
     compute_flags #(.P(P)) flag_computer(significand_product_raw, flag_computer_new_flags);
-    normalizer #(.P(P), .Q(Q)) initial_normalizer(working_significand, exponent, flags, normalizer_new_sig, normalizer_new_exponent, normalizer_ovfl, normalizer_new_flags[1:0]);
+    normalizer #(.P(P), .Q(Q)) normalizer(working_significand, exponent, flags, normalizer_new_sig, normalizer_new_exponent, normalizer_ovfl, normalizer_new_flags[1:0]);
 
     logic [P - 1:0] rounder_new_sig;
     logic rounder_new_guard;
     rounder #(.P(P)) the_rounder(round_in, sign_bit, working_significand, flags[1:0], rounder_new_sig, rounder_new_guard);
 
+    logic rounding_complete;
+    localparam int BIAS = 2**(Q - 1) - 1;
+    localparam logic [Q-1:0] BIAS_LOGIC = BIAS[Q-1:0];
 
     always_ff @(posedge clk_in) begin
         if (~rst_in_N) begin
-            state <= IDLE;
+            state <= LOAD;
         end else begin
             case (state)
-                IDLE: begin
-                    if (start_in) begin
-                        state <= LOAD;
-                    end
-                end
                 LOAD: begin
-                    logic [Q:0] exponent_sum;
+                    if (start_in) begin
+                        logic [Q:0] exponent_sum;
 
-                    exponent_sum = x_in[P+Q-2:P-1] + y_in[P+Q-2:P-1];
-                    // ASK NATE WHAT TO DO ABOUT THIS IN ANY OF THE WEIRD CASES:
-                    // the new exponent is all 1s
-                    // the addition carries
+                        exponent_sum = (x_in[P+Q-2:P-1] + y_in[P+Q-2:P-1]) - BIAS_LOGIC;
+                        input_x <= x_in;
+                        input_y <= y_in;
+                        // $display("%x, %x\n", x_in, y_in);
+                        sign_bit <= x_in[P + Q - 1] ^ y_in[P + Q - 1];
+                        state <= EXECUTE;
+                        start_multiplier <= 1;
+                        rounding_complete <= 0;
+                        exponent <= exponent_sum[Q-1:0];
+                        state <= EXECUTE;
+                    end
 
-
-                    // figure out all the cases in which we shouldn't go on to execute.
-
-                    input_x <= x_in;
-                    input_y <= y_in;
-                    sign_bit <= x_in[P + Q - 1] ^ y_in[P + Q - 1];
-                    state <= EXECUTE;
-                    start_multiplier <= 1;
+                    ready_out <= 1;
                 end
                 EXECUTE: begin
                     if (multiplier_done) begin
                         flags <= flag_computer_new_flags;
                         working_significand <= significand_product_raw[2*P-1:P];
+                        // $display("the working_significand is intialized as %x\n", significand_product_raw[2*P-1:0]);
                         state <= NORMALIZE;
                     end    
                  end
@@ -291,11 +291,30 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     exponent <= normalizer_new_exponent;
                     working_significand <= normalizer_new_sig;
 
-                    // TODO: figure out wtf to do with ovfl.
+                    if (rounding_complete) begin
+                        state <= DONE;
+                    end else begin
+                        state <= ROUND;
+                    end
                 end
-                ROUND: begin end
-                RENORMALIZE: begin end
-                DONE: begin end
+                ROUND: begin
+                    working_significand <= rounder_new_sig;
+                    flags <= { rounder_new_guard, 1'b0, 1'b0 };
+
+                    rounding_complete <= 1;
+                    state <= NORMALIZE;
+                end
+                DONE: begin
+                    logic [P-2:0] without_hidden;
+                    logic [P + Q - 1:0] the_output;
+
+                    without_hidden = working_significand[P-2:0];
+                    the_output = { sign_bit, exponent, without_hidden };
+                    p_out <= the_output;
+                    oor_out = 4'b0;
+                    valid_out <= 1;
+                    state <= LOAD;
+                end
                 default: begin end
             endcase
         end
