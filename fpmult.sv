@@ -8,6 +8,8 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
 
     logic state;
 
+    localparam logic [COUNTER_BITS-1:0] P_MINUS_ONE = COUNTER_BITS'(P - 1);
+
     always_ff @(posedge clk) begin
         if (reset) begin
             state <= 1'b0;
@@ -24,9 +26,8 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
                         counter <= 'b0;
                         vector[2 * P - 1:P] <= 'b0;
                         vector[P-1:0] <= a;
-                        $display("a is %x, b is %x\n", a, b);
-                        done <= 1'b0;
                     end
+                    done <= 1'b0;
                 end
 
                 // Multiply state.
@@ -39,7 +40,6 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
                     logic [COUNTER_BITS-1:0] new_counter;
                     logic [2 * P - 1:0] new_vector;
 
-                    // $display("vector is %x\n", vector);
                     multiplied = b & {P{vector[0]}};
                     product = vector[2 * P - 1:P];
                     sum = multiplied + product;
@@ -51,12 +51,11 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
 
                     vector <= new_vector;
 
-                    // TODO: Replace this with a comparator so that it becomes more general.
-                    {should_fin, new_counter} = counter + 1;
+                    new_counter = counter + 1;
                     counter <= new_counter;
-                    done <= should_fin;
+                    done <= counter == P_MINUS_ONE;
 
-                    if (should_fin) begin
+                    if (counter == P_MINUS_ONE) begin
                         state <= 1'b0;
                         out <= new_vector;
                     end
@@ -261,26 +260,28 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                 LOAD: begin
                     if (start_in) begin
                         logic [Q:0] exponent_sum;
+                        logic [Q-1:0] x_exp, y_exp;
 
-                        exponent_sum = (x_in[P+Q-2:P-1] + y_in[P+Q-2:P-1]) - BIAS_LOGIC;
+                        x_exp = x_in[P+Q-2:P-1];
+                        y_exp = y_in[P+Q-2:P-1];
+                        exponent_sum = (x_exp + y_exp) - BIAS_LOGIC;
                         input_x <= x_in;
                         input_y <= y_in;
-                        // $display("%x, %x\n", x_in, y_in);
                         sign_bit <= x_in[P + Q - 1] ^ y_in[P + Q - 1];
-                        state <= EXECUTE;
                         start_multiplier <= 1;
                         rounding_complete <= 0;
                         exponent <= exponent_sum[Q-1:0];
                         state <= EXECUTE;
+                        valid_out <= 0;
                     end
 
                     ready_out <= 1;
                 end
                 EXECUTE: begin
+                    start_multiplier <= 0;
                     if (multiplier_done) begin
                         flags <= flag_computer_new_flags;
                         working_significand <= significand_product_raw[2*P-1:P];
-                        // $display("the working_significand is intialized as %x\n", significand_product_raw[2*P-1:0]);
                         state <= NORMALIZE;
                     end    
                  end

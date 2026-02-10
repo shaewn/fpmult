@@ -73,11 +73,6 @@ module fpmult_tb #(parameter int P = 8, parameter int Q = 8) ();
             // Get next line
             $fscanf(fd, "%x\n", line);
 
-            counter += 1;
-            if (counter != DESIRED) continue;
-
-            $display("Desired line is %x\n", line);
-
             round_mode = line[53:52];
             test_x = line[51:36];
             test_y = line[35:20];
