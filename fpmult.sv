@@ -68,25 +68,23 @@ endmodule: umul
 
 // flags_in: {guard, round, sticky}
 // flags_out: {round, sticky}
-module normalizer #(parameter int P, parameter int Q) (input logic [P - 1:0] significand, logic [Q - 1:0] exponent, logic [2:0] flags_in,
-        output logic [P - 1:0] out_sig, logic [Q - 1:0] out_exp, logic ovfl, logic [1:0] flags_out);
+module normalizer #(parameter int P, parameter int Q) (input logic [P - 1:0] significand, logic [Q:0] exponent, logic [2:0] flags_in,
+        output logic [P - 1:0] out_sig, logic [Q:0] out_exp, logic [1:0] flags_out);
     always_comb begin
         logic new_round, new_sticky;
         if (significand[P - 1] == 0) begin
             new_round = flags_in[1];
             new_sticky = flags_in[0];
-            assign out_sig = {significand[P - 2:0], flags_in[2]};
-            assign out_exp = exponent;
-            assign ovfl = 0;
-            assign flags_out = {new_round, new_sticky};
+            out_sig = {significand[P - 2:0], flags_in[2]};
+            out_exp = exponent;
+            flags_out = {new_round, new_sticky};
         end else begin
             new_round = flags_in[2];
             new_sticky = flags_in[1] | flags_in[0];
 
-            assign out_exp = exponent + 1; // NOTE: exponent could become too large!
-            assign ovfl = exponent + 1 == '1 ? 1 : 0;
-            assign out_sig = significand;
-            assign flags_out = {new_round, new_sticky};
+            out_exp = exponent + 1;
+            out_sig = significand;
+            flags_out = {new_round, new_sticky};
             // base 10 example: 35.4 * 10^0 -> 3.54 * 10^1
             // base 2 
         end
@@ -215,7 +213,9 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
     typedef enum logic [2:0] { 
         LOAD,
         EXECUTE,
+        PRENORM_FIXUP,
         NORMALIZE,
+        POSTNORM_FIXUP,
         ROUND,
         DONE
     } State;
@@ -223,6 +223,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
     logic [2:0] state;
 
     logic [2 * P - 1:0] significand_product_raw;
+    logic [2 * P - 1:0] big_product;
     logic [P-1:0] working_significand;
     logic multiplier_done;
     logic [2:0] flags;
@@ -231,26 +232,31 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
 
     logic [P+Q-1:0] input_x, input_y;
     logic sign_bit;
-    logic [Q-1:0] exponent;
+    logic signed [Q:0] exponent;
 
     logic [2:0] normalizer_new_flags;
     logic [P-1:0] normalizer_new_sig;
-    logic [Q-1:0] normalizer_new_exponent;
-    logic normalizer_ovfl;
+    logic [Q:0] normalizer_new_exponent;
 
     logic start_multiplier;
 
-    umul #(.P(P)) dummy(clk_in, ~rst_in_N, {1'b1, input_x[P-2:0]}, {1'b1, input_y[P-2:0]}, start_multiplier, multiplier_done, significand_product_raw);
+    logic [Q-1:0] in_x_exp, in_y_exp;
+    assign in_x_exp = input_x[P + Q - 2:P - 1];
+    assign in_y_exp = input_y[P + Q - 2:P - 1];
+
+    umul #(.P(P)) dummy(clk_in, ~rst_in_N, {in_x_exp == '0 ? 1'b0 : 1'b1, input_x[P-2:0]}, {in_y_exp == '0 ? 1'b0 : 1'b1, input_y[P-2:0]}, start_multiplier, multiplier_done, significand_product_raw);
     compute_flags #(.P(P)) flag_computer(significand_product_raw, flag_computer_new_flags);
-    normalizer #(.P(P), .Q(Q)) normalizer(working_significand, exponent, flags, normalizer_new_sig, normalizer_new_exponent, normalizer_ovfl, normalizer_new_flags[1:0]);
+    normalizer #(.P(P), .Q(Q)) normalizer(working_significand, exponent, flags, normalizer_new_sig, normalizer_new_exponent, normalizer_new_flags[1:0]);
 
     logic [P - 1:0] rounder_new_sig;
     logic rounder_new_guard;
     rounder #(.P(P)) the_rounder(round_in, sign_bit, working_significand, flags[1:0], rounder_new_sig, rounder_new_guard);
 
     logic rounding_complete;
+
     localparam int BIAS = 2**(Q - 1) - 1;
     localparam logic [Q-1:0] BIAS_LOGIC = BIAS[Q-1:0];
+    localparam int Emin = 1 - BIAS;
 
     always_ff @(posedge clk_in) begin
         if (~rst_in_N) begin
@@ -264,13 +270,13 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
 
                         x_exp = x_in[P+Q-2:P-1];
                         y_exp = y_in[P+Q-2:P-1];
-                        exponent_sum = (x_exp + y_exp) - BIAS_LOGIC;
+                        exponent_sum = (x_exp - BIAS_LOGIC) + (y_exp - BIAS_LOGIC);
                         input_x <= x_in;
                         input_y <= y_in;
                         sign_bit <= x_in[P + Q - 1] ^ y_in[P + Q - 1];
                         start_multiplier <= 1;
                         rounding_complete <= 0;
-                        exponent <= exponent_sum[Q-1:0];
+                        exponent <= exponent_sum;
                         state <= EXECUTE;
                         valid_out <= 0;
                     end
@@ -280,11 +286,23 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                 EXECUTE: begin
                     start_multiplier <= 0;
                     if (multiplier_done) begin
-                        flags <= flag_computer_new_flags;
-                        working_significand <= significand_product_raw[2*P-1:P];
-                        state <= NORMALIZE;
+                        big_product <= significand_product_raw;
+                        state <= PRENORM_FIXUP;
+                        $display("full product is %b", significand_product_raw);
                     end    
-                 end
+                end
+                PRENORM_FIXUP: begin
+                    if (big_product[2*P-1] == 1'b0 && big_product[2*P-2] == 1'b0 && exponent > (Q+1)'(Emin)) begin
+                        exponent <= exponent - 1;
+                        big_product <= { big_product[2 * P - 2:0], 1'b0 };
+                    end else begin
+                        // after done do this
+                        flags <= flag_computer_new_flags;
+                        // TODO: i suspect this is causing our issues.
+                        working_significand <= big_product[2*P-1:P];
+                        state <= NORMALIZE;
+                    end
+                end
                 NORMALIZE: begin
                     normalizer_new_flags[2] = 0;
 
@@ -294,6 +312,19 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
 
                     if (rounding_complete) begin
                         state <= DONE;
+                    end else begin
+                        state <= POSTNORM_FIXUP;
+                        // initialize specific state to FIXUP
+                    end
+                end
+                POSTNORM_FIXUP: begin
+                    if (exponent < (Q+1)'(Emin)) begin
+                        working_significand <= {1'b0, working_significand[P - 1:1]};
+
+                        // guard, round, sticky
+                        // guard doesn't have any meaning at this point, because we already did the first NORMALIZE pass.
+                        flags <= { 1'b0, working_significand[0], flags[0] | flags[1] };
+                        exponent <= exponent + 1;
                     end else begin
                         state <= ROUND;
                     end
@@ -308,9 +339,16 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                 DONE: begin
                     logic [P-2:0] without_hidden;
                     logic [P + Q - 1:0] the_output;
+                    logic [Q-1:0] final_exponent;
+                    logic [Q:0] biased_exponent;
 
                     without_hidden = working_significand[P-2:0];
-                    the_output = { sign_bit, exponent, without_hidden };
+                    // check whether the exponent is actually in range. if not, either +/- 0, +/- infinity, or +/- Nmax
+
+                    biased_exponent = exponent + (Q+1)'(BIAS);
+                    final_exponent = biased_exponent[Q-1:0];
+
+                    the_output = { sign_bit, final_exponent, without_hidden };
                     p_out <= the_output;
                     oor_out = 4'b0;
                     valid_out <= 1;

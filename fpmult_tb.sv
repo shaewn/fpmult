@@ -55,7 +55,7 @@ module fpmult_tb #(parameter int P = 8, parameter int Q = 8) ();
 
     //initial block...this is our test simulation
     initial begin
-        fd = $fopen("tests.txt", "r");  // STUDENTS: Edit me to edit your test vector
+        fd = $fopen("failing_tests.txt", "r");  // STUDENTS: Edit me to edit your test vector
         // Set initial values
         rst_in_N = 1;
         num_tests = 0;
