@@ -110,13 +110,15 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
 
     logic round, sticky;
     assign {round, sticky} = flags;
+
     // round modes:
     // RTE - 0
     // RTZ - 1
     // RD - 2
     // RU - 3
     always_comb begin
-        logic [P:0] sum;
+        logic [P:0] sum = '0;
+
         case (round_mode) 
             // RTE - Round to nearest, ties if even
             // if round = 0, we round down (its already < 0.5)
@@ -127,18 +129,18 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
                 //              r (OBVIOUSLY go up... not down to ????? 00) 
                 // (round && sticky) || (round && significand[0])
                 if (round && (sticky || significand[0])) begin
-                    assign sum = significand + 1;
-                    assign out_guard = sum[0];
-                    assign out_sig = sum[P:1];
+                    sum = significand + 1;
+                    out_guard = sum[0];
+                    out_sig = sum[P:1];
 
                     // if carry:
                     // 2 * 2^{old exp}
                     // 1.0000000000000... * 2^{old exp + 1}
                 end else begin
                     // choose whichever significand is even.
-                    assign sum = 0;
-                    assign out_sig[P-1:0] = {1'b0, significand[P-1:1]};
-                    assign out_guard = significand[0];
+                    sum = 0;
+                    out_sig = {1'b0, significand[P-1:1]};
+                    out_guard = significand[0];
                 end
             end
 
@@ -149,9 +151,9 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
             // 1.01_01 -> 1.01
             // -1.01_01 -> -1.01
             2'b01: begin
-                assign sum = 0;
-                assign out_sig[P-1:0] = {1'b0, significand[P-1:1]};
-                assign out_guard = significand[0];
+                sum = 0;
+                out_sig = {1'b0, significand[P-1:1]};
+                out_guard = significand[0];
             end
 
 
@@ -163,14 +165,14 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
             2'b10: begin
                 if ((!round && !sticky) || !sign_bit) begin
                     // truncate (obv).
-                    assign sum = 0;
-                    assign out_sig[P-1:0] = {1'b0, significand[P-1:1]};
-                    assign out_guard = significand[0];
+                    sum = 0;
+                    out_sig = {1'b0, significand[P-1:1]};
+                    out_guard = significand[0];
                 end else begin
                     // (round || sticky) && sign
-                    assign sum = significand + 1;
-                    assign out_guard = sum[0];
-                    assign out_sig = sum[P:1];
+                    sum = significand + 1;
+                    out_guard = sum[0];
+                    out_sig = sum[P:1];
                 end
             end
 
@@ -182,14 +184,14 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
             2'b11: begin
                 if ((!round && !sticky) || sign_bit) begin
                     // truncate (obv).
-                    assign sum = 0;
-                    assign out_sig[P-1:0] = {1'b0, significand[P-1:1]};
-                    assign out_guard = significand[0];
+                    sum = 0;
+                    out_sig = {1'b0, significand[P-1:1]};
+                    out_guard = significand[0];
                 end else begin
                     // (round || sticky) && !sign
-                    assign sum = significand + 1;
-                    assign out_guard = sum[0];
-                    assign out_sig = sum[P:1];
+                    sum = significand + 1;
+                    out_guard = sum[0];
+                    out_sig = sum[P:1];
                 end
             end
         endcase
@@ -221,6 +223,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
     } State;
 
     logic [2:0] state;
+    logic [1:0] round_mode;
 
     logic [2 * P - 1:0] significand_product_raw;
     logic [2 * P - 1:0] big_product;
@@ -250,7 +253,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
 
     logic [P - 1:0] rounder_new_sig;
     logic rounder_new_guard;
-    rounder #(.P(P)) the_rounder(round_in, sign_bit, working_significand, flags[1:0], rounder_new_sig, rounder_new_guard);
+    rounder #(.P(P)) the_rounder(round_mode, sign_bit, working_significand, flags[1:0], rounder_new_sig, rounder_new_guard);
 
     logic rounding_complete;
 
@@ -267,6 +270,8 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     if (start_in) begin
                         logic signed [Q:0] exponent_sum;
                         logic [Q-1:0] x_exp, y_exp;
+
+                        round_mode <= round_in;
 
                         x_exp = x_in[P+Q-2:P-1];
                         y_exp = y_in[P+Q-2:P-1];
@@ -333,7 +338,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                 ROUND: begin
                     working_significand <= rounder_new_sig;
                     flags <= { rounder_new_guard, 1'b0, 1'b0 };
-
+                    
                     rounding_complete <= 1;
                     state <= NORMALIZE;
                 end
