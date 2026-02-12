@@ -245,7 +245,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
     assign in_y_exp = input_y[P + Q - 2:P - 1];
 
     umul #(.P(P)) dummy(clk_in, ~rst_in_N, {in_x_exp == '0 ? 1'b0 : 1'b1, input_x[P-2:0]}, {in_y_exp == '0 ? 1'b0 : 1'b1, input_y[P-2:0]}, start_multiplier, multiplier_done, significand_product_raw);
-    compute_flags #(.P(P)) flag_computer(significand_product_raw, flag_computer_new_flags);
+    compute_flags #(.P(P)) flag_computer(big_product, flag_computer_new_flags);
     normalizer #(.P(P), .Q(Q)) normalizer(working_significand, exponent, flags, normalizer_new_sig, normalizer_new_exponent, normalizer_new_flags[1:0]);
 
     logic [P - 1:0] rounder_new_sig;
@@ -265,12 +265,13 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
             case (state)
                 LOAD: begin
                     if (start_in) begin
-                        logic [Q:0] exponent_sum;
+                        logic signed [Q:0] exponent_sum;
                         logic [Q-1:0] x_exp, y_exp;
 
                         x_exp = x_in[P+Q-2:P-1];
                         y_exp = y_in[P+Q-2:P-1];
-                        exponent_sum = (x_exp - BIAS_LOGIC) + (y_exp - BIAS_LOGIC);
+                        exponent_sum = x_exp - BIAS_LOGIC + (x_exp == '0 ? 1 : 0) + y_exp - BIAS_LOGIC + (y_exp == '0 ? 1 : 0);
+                        //$display("exponent_sum is %d", exponent_sum);
                         input_x <= x_in;
                         input_y <= y_in;
                         sign_bit <= x_in[P + Q - 1] ^ y_in[P + Q - 1];
@@ -288,17 +289,17 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     if (multiplier_done) begin
                         big_product <= significand_product_raw;
                         state <= PRENORM_FIXUP;
-                        $display("full product is %b", significand_product_raw);
+                        //$display("full product is %b", significand_product_raw);
                     end    
                 end
                 PRENORM_FIXUP: begin
                     if (big_product[2*P-1] == 1'b0 && big_product[2*P-2] == 1'b0 && exponent > (Q+1)'(Emin)) begin
                         exponent <= exponent - 1;
+                        //$display("current_exponent is %d, new_exponent will be %d, the product is %b", exponent, exponent - 1, big_product);
                         big_product <= { big_product[2 * P - 2:0], 1'b0 };
                     end else begin
                         // after done do this
                         flags <= flag_computer_new_flags;
-                        // TODO: i suspect this is causing our issues.
                         working_significand <= big_product[2*P-1:P];
                         state <= NORMALIZE;
                     end
@@ -346,7 +347,9 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     // check whether the exponent is actually in range. if not, either +/- 0, +/- infinity, or +/- Nmax
 
                     biased_exponent = exponent + (Q+1)'(BIAS);
-                    final_exponent = biased_exponent[Q-1:0];
+                    // if the hidden bit is 0, change exponent representation from 1 to 0
+                    //$display("the hidden bit is %d", working_significand[P - 1]);
+                    final_exponent = biased_exponent[Q-1:0] - {{Q-1{1'b0}}, ~working_significand[P-1]}; // - Q'(~working_significand[P-1]);
 
                     the_output = { sign_bit, final_exponent, without_hidden };
                     p_out <= the_output;

@@ -1,14 +1,14 @@
 {
-    "test_rounding": false,
+    "test_rounding": true,
     "rounding_modes_to_test": {
-      "RTE": false,
-      "RTZ": false,
-      "RD": false,
-      "RU": false
+      "RTE": true,
+      "RTZ": true,
+      "RD": true,
+      "RU": true
     },
-    "test_zero_input": false,
+    "test_zero_input": true,
     "test_inf_input": false,
     "test_nan_input": false,
-    "test_subnormal_input": false,
-    "test_parameterize": false
+    "test_subnormal_input": true,
+    "test_parameterize": true
 }
