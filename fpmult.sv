@@ -314,14 +314,16 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
     always_ff @(posedge clk_in) begin
         if (~rst_in_N) begin
             state <= LOAD;
+            valid_out <= 0;
         end else begin
             case (state)
                 LOAD: begin
+                    valid_out <= 0;
                     if (start_in) begin
                         logic signed [Q:0] exponent_sum;
                         logic [Q-1:0] x_exp, y_exp;
                         logic [P-2:0] x_mant, y_mant;
-                        logic x_is_nan, x_inf, x_zero, y_is_nan, y_inf, y_zero, result_is_nan;
+                        logic x_is_nan, x_inf, x_zero, y_is_nan, y_inf, y_zero, result_is_nan, result_is_inf;
 
                         round_mode <= round_in;
 
@@ -345,16 +347,20 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                         start_multiplier <= 1;
                         rounding_complete <= 0;
                         exponent <= exponent_sum;
-                        valid_out <= 0;
 
                         result_is_nan = (x_is_nan || y_is_nan) || (x_inf && y_zero) || (x_zero && y_inf);
-                        is_inf <= (x_inf || y_inf) && !result_is_nan;
+                        result_is_inf = (x_inf || y_inf) && !result_is_nan;
+                        is_inf <= result_is_inf;
                         is_nan <= result_is_nan;
 
-                        if (is_inf || is_nan || x_zero || y_zero) begin
-                            working_significand <= '0;
+                        if (result_is_nan) begin
+                            working_significand <= x_is_nan ? {1'b1, x_mant} : {1'b1, y_mant};
                             state <= DONE;
+                        end else if (result_is_inf || x_zero || y_zero) begin
+                            working_significand <= '0;
+                            // Ignored if result_is_inf.
                             exponent <= (Q+1)'(Emin);
+                            state <= DONE;
                         end else begin
                             state <= EXECUTE;
                         end
@@ -448,8 +454,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                         p_out <= the_output;
                     end
 
-                    // TODO: oor_out
-                    oor_out <= 4'b0;
+                    oor_out <= { working_significand == '0, is_inf, is_nan, ~working_significand[P - 1] };
 
                     valid_out <= 1;
                     state <= LOAD;
