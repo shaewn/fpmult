@@ -10,7 +10,7 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
 
     localparam logic [COUNTER_BITS-1:0] P_MINUS_ONE = COUNTER_BITS'(P - 1);
 
-    always_ff @(posedge clk) begin
+    always_ff @(negedge clk) begin
         if (reset) begin
             state <= 1'b0;
             counter <= '0;
@@ -311,7 +311,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
     localparam logic [Q-1:0] BIAS_LOGIC = BIAS[Q-1:0];
     localparam int Emin = 1 - BIAS;
 
-    always_ff @(posedge clk_in) begin
+    always_ff @(negedge clk_in) begin
         if (~rst_in_N) begin
             state <= LOAD;
             valid_out <= 0;
