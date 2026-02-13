@@ -7,8 +7,8 @@
       "RU": true
     },
     "test_zero_input": true,
-    "test_inf_input": false,
-    "test_nan_input": false,
+    "test_inf_input": true,
+    "test_nan_input": true,
     "test_subnormal_input": true,
     "test_parameterize": true
 }

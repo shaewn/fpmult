@@ -106,10 +106,18 @@ endmodule: compute_flags
 // 1.11111111111111111110... (rounds to) -> 1.11111111111111111111 -> [01.1111111111111111111, 1]
 // the input significand is expected to in the format x.xxxxxx...
 // the output significand is in the format xx.xxxxx...
-module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit, logic [P - 1:0] significand, logic [1:0] flags, output logic [P - 1:0] out_sig, logic out_guard);
+module rounder #(parameter int P, parameter int Q) (input logic [1:0] round_mode, logic sign_bit, logic signed [Q:0] exponent, logic [P - 1:0] significand, logic [1:0] flags, output logic [P - 1:0] out_sig, logic out_guard, logic is_inf, logic [Q:0] out_exponent);
 
     logic round, sticky;
     assign {round, sticky} = flags;
+
+    // all 1's no bias: 2 ** Q - 1
+    // all 1's with bias: 2**Q - 1 - (2**(Q - 1) - 1)
+    // simplify: 2**Q - 1 - 2**(Q-1) + 1
+    // simplify: 2**(Q-1)
+    // but we don't use all 1's as Emax (reserved), so take away one
+    // 2**(Q-1) - 1
+    localparam int Emax = 2 ** (Q - 1) - 1;
 
     // round modes:
     // RTE - 0
@@ -117,7 +125,15 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
     // RD - 2
     // RU - 3
     always_comb begin
-        logic [P:0] sum = '0;
+        logic [P:0] sum;
+        logic [P:0] n_max_sig;
+        logic exponent_too_big;
+
+        sum = '0;
+        n_max_sig = { 1'b0, {P{1'b1}} };
+        exponent_too_big = exponent > (Q+1)'(Emax);
+
+        out_exponent = exponent;
 
         case (round_mode) 
             // RTE - Round to nearest, ties if even
@@ -142,6 +158,8 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
                     out_sig = {1'b0, significand[P-1:1]};
                     out_guard = significand[0];
                 end
+
+                is_inf = exponent_too_big;
             end
 
             // RTZ - Do nothing (truncate).
@@ -154,6 +172,13 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
                 sum = 0;
                 out_sig = {1'b0, significand[P-1:1]};
                 out_guard = significand[0];
+
+                is_inf = 0;
+
+                if (exponent_too_big) begin
+                    { out_sig, out_guard } = n_max_sig;
+                    out_exponent = (Q+1)'(Emax);
+                end
             end
 
 
@@ -174,6 +199,13 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
                     out_guard = sum[0];
                     out_sig = sum[P:1];
                 end
+
+                is_inf = sign_bit && exponent_too_big;
+
+                if (!sign_bit && exponent_too_big) begin
+                    { out_sig, out_guard } = n_max_sig;
+                    out_exponent = (Q+1)'(Emax);
+                end
             end
 
             // RU
@@ -193,8 +225,22 @@ module rounder #(parameter int P) (input logic [1:0] round_mode, logic sign_bit,
                     out_guard = sum[0];
                     out_sig = sum[P:1];
                 end
+
+                is_inf = !sign_bit && exponent_too_big;
+
+                if (sign_bit && exponent_too_big) begin
+                    { out_sig, out_guard } = n_max_sig;
+                    out_exponent = (Q+1)'(Emax);
+                end
             end
         endcase
+
+
+        // Not necessary because we'll do this in the end anyway (is_inf will be set).
+        if (is_inf) begin
+            out_exponent = { 1'b0, {Q{1'b1}} };
+            { out_sig, out_guard } = '0;
+        end
     end
 
 endmodule: rounder
@@ -252,10 +298,14 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
     normalizer #(.P(P), .Q(Q)) normalizer(working_significand, exponent, flags, normalizer_new_sig, normalizer_new_exponent, normalizer_new_flags[1:0]);
 
     logic [P - 1:0] rounder_new_sig;
+    logic [Q:0] rounder_new_exponent;
     logic rounder_new_guard;
-    rounder #(.P(P)) the_rounder(round_mode, sign_bit, working_significand, flags[1:0], rounder_new_sig, rounder_new_guard);
+    logic rounder_is_inf;
+    rounder #(.P(P), .Q(Q)) the_rounder(round_mode, sign_bit, exponent, working_significand, flags[1:0], rounder_new_sig, rounder_new_guard, rounder_is_inf, rounder_new_exponent);
 
     logic rounding_complete;
+
+    logic is_inf, is_nan;
 
     localparam int BIAS = 2**(Q - 1) - 1;
     localparam logic [Q-1:0] BIAS_LOGIC = BIAS[Q-1:0];
@@ -270,11 +320,23 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     if (start_in) begin
                         logic signed [Q:0] exponent_sum;
                         logic [Q-1:0] x_exp, y_exp;
+                        logic [P-2:0] x_mant, y_mant;
+                        logic x_is_nan, x_inf, x_zero, y_is_nan, y_inf, y_zero, result_is_nan;
 
                         round_mode <= round_in;
 
                         x_exp = x_in[P+Q-2:P-1];
+                        x_mant = x_in[P-2:0];
+                        x_is_nan = (x_exp == '1) && (x_mant != '0);
+                        x_inf = (x_exp == '1) && (x_mant == '0);
+                        x_zero = (x_exp == '0) && (x_mant == '0);
+
                         y_exp = y_in[P+Q-2:P-1];
+                        y_mant = y_in[P-2:0];
+                        y_is_nan = (y_exp == '1) && (y_mant != '0);
+                        y_inf = (y_exp == '1) && (y_mant == '0);
+                        y_zero = (y_exp == '0) && (y_mant == '0);
+
                         exponent_sum = x_exp - BIAS_LOGIC + (x_exp == '0 ? 1 : 0) + y_exp - BIAS_LOGIC + (y_exp == '0 ? 1 : 0);
                         //$display("exponent_sum is %d", exponent_sum);
                         input_x <= x_in;
@@ -283,8 +345,19 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                         start_multiplier <= 1;
                         rounding_complete <= 0;
                         exponent <= exponent_sum;
-                        state <= EXECUTE;
                         valid_out <= 0;
+
+                        result_is_nan = (x_is_nan || y_is_nan) || (x_inf && y_zero) || (x_zero && y_inf);
+                        is_inf <= (x_inf || y_inf) && !result_is_nan;
+                        is_nan <= result_is_nan;
+
+                        if (is_inf || is_nan || x_zero || y_zero) begin
+                            working_significand <= '0;
+                            state <= DONE;
+                            exponent <= (Q+1)'(Emin);
+                        end else begin
+                            state <= EXECUTE;
+                        end
                     end
 
                     ready_out <= 1;
@@ -295,6 +368,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                         big_product <= significand_product_raw;
                         state <= PRENORM_FIXUP;
                         //$display("full product is %b", significand_product_raw);
+                        // TODO: Maybe special case this guy on if the product is zero and then don't do it.
                     end    
                 end
                 PRENORM_FIXUP: begin
@@ -312,15 +386,24 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                 NORMALIZE: begin
                     normalizer_new_flags[2] = 0;
 
-                    flags <= normalizer_new_flags;
                     exponent <= normalizer_new_exponent;
                     working_significand <= normalizer_new_sig;
 
                     if (rounding_complete) begin
                         state <= DONE;
+                        flags <= normalizer_new_flags;
                     end else begin
-                        state <= POSTNORM_FIXUP;
                         // initialize specific state to FIXUP
+                        if (exponent + (Q+1)'(P) < (Q+1)'(Emin)) begin
+                                     // guard, round, new sticky
+                            flags <= { 1'b0, 1'b0, |{working_significand, normalizer_new_flags[1], normalizer_new_flags[0]}};
+                        end else begin
+                            state <= POSTNORM_FIXUP;
+                            flags <= normalizer_new_flags;
+                        end
+                        // p cycles.
+                        // 1.xxxxx
+                        // 0.00000  0 1 | anything after (including previous sticky)
                     end
                 end
                 POSTNORM_FIXUP: begin
@@ -341,24 +424,33 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     
                     rounding_complete <= 1;
                     state <= NORMALIZE;
+                    is_inf <= rounder_is_inf;
+                    exponent <= rounder_new_exponent;
                 end
                 DONE: begin
                     logic [P-2:0] without_hidden;
                     logic [P + Q - 1:0] the_output;
                     logic [Q-1:0] final_exponent;
                     logic [Q:0] biased_exponent;
+                    
+                    if (is_inf || is_nan) begin
+                        p_out <= { sign_bit, {Q{1'b1}}, {(P-1){is_nan || !is_inf}} };
+                    end else begin
+                        without_hidden = working_significand[P-2:0];
+                        // check whether the exponent is actually in range. if not, either +/- 0, +/- infinity, or +/- Nmax
 
-                    without_hidden = working_significand[P-2:0];
-                    // check whether the exponent is actually in range. if not, either +/- 0, +/- infinity, or +/- Nmax
+                        biased_exponent = exponent + (Q+1)'(BIAS);
+                        // if the hidden bit is 0, change exponent representation from 1 to 0
+                        //$display("the hidden bit is %d", working_significand[P - 1]);
+                        final_exponent = biased_exponent[Q-1:0] - {{Q-1{1'b0}}, ~working_significand[P-1]}; // - Q'(~working_significand[P-1]);
 
-                    biased_exponent = exponent + (Q+1)'(BIAS);
-                    // if the hidden bit is 0, change exponent representation from 1 to 0
-                    //$display("the hidden bit is %d", working_significand[P - 1]);
-                    final_exponent = biased_exponent[Q-1:0] - {{Q-1{1'b0}}, ~working_significand[P-1]}; // - Q'(~working_significand[P-1]);
+                        the_output = { sign_bit, final_exponent, without_hidden };
+                        p_out <= the_output;
+                    end
 
-                    the_output = { sign_bit, final_exponent, without_hidden };
-                    p_out <= the_output;
-                    oor_out = 4'b0;
+                    // TODO: oor_out
+                    oor_out <= 4'b0;
+
                     valid_out <= 1;
                     state <= LOAD;
                 end
