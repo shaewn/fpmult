@@ -404,9 +404,9 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                                      // guard, round, new sticky
                             flags <= { 1'b0, 1'b0, |{working_significand, normalizer_new_flags[1], normalizer_new_flags[0]}};
                         end else begin
-                            state <= POSTNORM_FIXUP;
                             flags <= normalizer_new_flags;
                         end
+                        state <= POSTNORM_FIXUP;
                         // p cycles.
                         // 1.xxxxx
                         // 0.00000  0 1 | anything after (including previous sticky)
