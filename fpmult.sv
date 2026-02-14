@@ -379,6 +379,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     if (multiplier_done) begin
                         big_product <= significand_product_raw;
                         state <= PRENORM_FIXUP;
+                        // $display("exponent %d", exponent);
                         // TODO: Maybe special case this guy on if the product is zero and then don't do it.
                     end    
                 end
@@ -397,6 +398,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                 NORMALIZE: begin
                     normalizer_new_flags[2] = 0;
 
+                    // $display("exponent vs normalizer_new_exponent: %d vs %d", exponent, normalizer_new_exponent);
 
                     if (rounding_complete) begin
                         state <= DONE;
@@ -406,12 +408,14 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     end else begin
                         logic [2:0] new_flags;
                         // $display("in normalize, exponent is %d, flags %b, w_sig %b", exponent, normalizer_new_flags, normalizer_new_sig);
-                        if (normalizer_new_exponent + (Q+1)'(P) < (Q+1)'(Emin)) begin
+                        // Subtract P from Emin to avoid possibility of positive signed overflow on normalizer_new_exponent.
+                        if (normalizer_new_exponent < (Q+1)'(Emin) - (Q+1)'(P)) begin
                                      // guard, round, new sticky
                             new_flags = { 1'b0, 1'b0, |{working_significand, normalizer_new_flags[1], normalizer_new_flags[0]}};
                             flags <= new_flags;
                             state <= ROUND;
                             working_significand <= '0;
+                            // $display("taking the weird small case");
                             exponent <= (Q+1)'(Emin);
                         end else begin
                             flags <= normalizer_new_flags;
@@ -445,13 +449,15 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     state <= NORMALIZE;
                     is_inf <= rounder_is_inf;
                     exponent <= rounder_new_exponent;
+
+                    //$display("is_inf is %b, exponent %d", rounder_is_inf, exponent);
                 end
                 DONE: begin
                     logic [P-2:0] without_hidden;
                     logic [P + Q - 1:0] the_output;
                     logic [Q-1:0] final_exponent;
                     logic [Q:0] biased_exponent;
-                    
+                
                     if (is_inf || is_nan) begin
                         p_out <= { sign_bit, {Q{1'b1}}, {(P-1){is_nan || !is_inf}} };
                     end else begin
