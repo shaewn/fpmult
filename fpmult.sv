@@ -10,7 +10,7 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
 
     localparam logic [COUNTER_BITS-1:0] P_MINUS_ONE = COUNTER_BITS'(P - 1);
 
-    always_ff @(negedge clk) begin
+    always_ff @(posedge clk) begin
         if (reset) begin
             state <= 1'b0;
             counter <= '0;
@@ -26,6 +26,7 @@ module umul #(parameter P) (input logic clk, reset, logic [P-1:0] a, logic [P-1:
                         counter <= 'b0;
                         vector[2 * P - 1:P] <= 'b0;
                         vector[P-1:0] <= a;
+                        //$display("a is %b, b is %b", a, b);
                     end
                     done <= 1'b0;
                 end
@@ -285,7 +286,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
 
     logic [2:0] normalizer_new_flags;
     logic [P-1:0] normalizer_new_sig;
-    logic [Q:0] normalizer_new_exponent;
+    logic signed [Q:0] normalizer_new_exponent;
 
     logic start_multiplier;
 
@@ -311,10 +312,11 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
     localparam logic [Q-1:0] BIAS_LOGIC = BIAS[Q-1:0];
     localparam int Emin = 1 - BIAS;
 
-    always_ff @(negedge clk_in) begin
+    always_ff @(posedge clk_in) begin
         if (~rst_in_N) begin
             state <= LOAD;
             valid_out <= 0;
+            start_multiplier <= 0;
         end else begin
             case (state)
                 LOAD: begin
@@ -324,6 +326,8 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                         logic [Q-1:0] x_exp, y_exp;
                         logic [P-2:0] x_mant, y_mant;
                         logic x_is_nan, x_inf, x_zero, y_is_nan, y_inf, y_zero, result_is_nan, result_is_inf;
+
+                        //$display("x_in is %b, y_in is %b", x_in, y_in);
 
                         round_mode <= round_in;
 
@@ -344,7 +348,6 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                         input_x <= x_in;
                         input_y <= y_in;
                         sign_bit <= x_in[P + Q - 1] ^ y_in[P + Q - 1];
-                        start_multiplier <= 1;
                         rounding_complete <= 0;
                         exponent <= exponent_sum;
 
@@ -362,8 +365,11 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                             exponent <= (Q+1)'(Emin);
                             state <= DONE;
                         end else begin
+                            start_multiplier <= 1;
                             state <= EXECUTE;
                         end
+
+                        // $display("x_in is %x, y_in is %x", x_in, y_in);
                     end
 
                     ready_out <= 1;
@@ -373,7 +379,6 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                     if (multiplier_done) begin
                         big_product <= significand_product_raw;
                         state <= PRENORM_FIXUP;
-                        //$display("full product is %b", significand_product_raw);
                         // TODO: Maybe special case this guy on if the product is zero and then don't do it.
                     end    
                 end
@@ -392,21 +397,28 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                 NORMALIZE: begin
                     normalizer_new_flags[2] = 0;
 
-                    exponent <= normalizer_new_exponent;
-                    working_significand <= normalizer_new_sig;
 
                     if (rounding_complete) begin
                         state <= DONE;
                         flags <= normalizer_new_flags;
+                        working_significand <= normalizer_new_sig;
+                        exponent <= normalizer_new_exponent;
                     end else begin
-                        // initialize specific state to FIXUP
-                        if (exponent + (Q+1)'(P) < (Q+1)'(Emin)) begin
+                        logic [2:0] new_flags;
+                        // $display("in normalize, exponent is %d, flags %b, w_sig %b", exponent, normalizer_new_flags, normalizer_new_sig);
+                        if (normalizer_new_exponent + (Q+1)'(P) < (Q+1)'(Emin)) begin
                                      // guard, round, new sticky
-                            flags <= { 1'b0, 1'b0, |{working_significand, normalizer_new_flags[1], normalizer_new_flags[0]}};
+                            new_flags = { 1'b0, 1'b0, |{working_significand, normalizer_new_flags[1], normalizer_new_flags[0]}};
+                            flags <= new_flags;
+                            state <= ROUND;
+                            working_significand <= '0;
+                            exponent <= (Q+1)'(Emin);
                         end else begin
                             flags <= normalizer_new_flags;
+                            state <= POSTNORM_FIXUP;
+                            working_significand <= normalizer_new_sig;
+                            exponent <= normalizer_new_exponent;
                         end
-                        state <= POSTNORM_FIXUP;
                         // p cycles.
                         // 1.xxxxx
                         // 0.00000  0 1 | anything after (including previous sticky)
@@ -414,6 +426,7 @@ module fpmult #(parameter int P = 8, parameter int Q = 8) (
                 end
                 POSTNORM_FIXUP: begin
                     if (exponent < (Q+1)'(Emin)) begin
+                        //$display("w_sig %b, flags %b, exponent %d", working_significand, flags, exponent);
                         working_significand <= {1'b0, working_significand[P - 1:1]};
 
                         // guard, round, sticky
